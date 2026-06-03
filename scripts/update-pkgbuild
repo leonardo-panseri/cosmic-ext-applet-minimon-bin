@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo='cosmic-utils/minimon-applet'
+
+latest_json="$(curl -fsSL "https://api.github.com/repos/${repo}/releases/latest")"
+tag="$(jq -r '.tag_name' <<<"${latest_json}")"
+version="${tag#v}"
+asset_name="$(
+  jq -r '
+    (
+      [.assets[].name | select(endswith("x86_64.rpm"))] |
+      first
+    ) // (
+      [.assets[].name | select(endswith("amd64.deb"))] |
+      first
+    ) // empty
+  ' <<<"${latest_json}"
+)"
+asset_url="$(jq -r --arg name "${asset_name}" '.assets[] | select(.name == $name) | .browser_download_url' <<<"${latest_json}")"
+digest="$(jq -r --arg name "${asset_name}" '.assets[] | select(.name == $name) | .digest // empty' <<<"${latest_json}")"
+
+if [[ -z "${asset_name}" ]]; then
+  echo "Could not find RPM or Debian release asset for ${tag}" >&2
+  exit 1
+fi
+
+if [[ -z "${asset_url}" ]]; then
+  echo "Could not find release asset ${asset_name} for ${tag}" >&2
+  exit 1
+fi
+
+if [[ "${digest}" != sha256:* ]]; then
+  echo "Release asset ${asset_name} has no GitHub sha256 digest" >&2
+  exit 1
+fi
+checksum="${digest#sha256:}"
+
+current_version="$(awk -F= '/^pkgver=/{print $2; exit}' PKGBUILD)"
+current_asset="$(awk -F'"' '/^_asset=/{print $2; exit}' PKGBUILD)"
+current_checksum="$(awk -F"'" '/^sha256sums_x86_64=/{print $2; exit}' PKGBUILD)"
+
+if [[ "${current_version}" == "${version}" && "${current_asset}" == "${asset_name}" && "${current_checksum}" == "${checksum}" ]]; then
+  echo "Already current at ${tag}"
+else
+  sed -i \
+    -e "s/^pkgver=.*/pkgver=${version}/" \
+    -e "s/^pkgrel=.*/pkgrel=1/" \
+    -e "s/^_asset=.*/_asset=\"${asset_name}\"/" \
+    -e "s/^sha256sums_x86_64=.*/sha256sums_x86_64=('${checksum}')/" \
+    PKGBUILD
+  echo "Updated ${current_version} -> ${version}"
+fi
+
+
+makepkg --printsrcinfo > .SRCINFO

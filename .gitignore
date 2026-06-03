@@ -1,0 +1,12 @@
+/*
+!/.github/
+!/.gitignore
+!/.SRCINFO
+!/LICENSE
+!/PKGBUILD
+!/README.md
+!/scripts/
+*.pkg.tar.*
+*.src.tar.*
+src/
+pkg/

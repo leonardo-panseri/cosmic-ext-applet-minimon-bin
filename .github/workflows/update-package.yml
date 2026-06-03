@@ -1,0 +1,75 @@
+name: Update package
+
+on:
+  schedule:
+    - cron: "29 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+
+    steps:
+      - name: Install tooling
+        run: |
+          pacman -Syu --noconfirm --needed base-devel git curl jq sudo openssh
+
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Setup user
+        run: |
+          useradd -m builder
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+
+      - name: Update PKGBUILD
+        run: |
+          sudo -u builder ./scripts/update-pkgbuild
+
+      - name: Build package
+        run: sudo -u builder makepkg -Ccf --noconfirm --syncdeps --needed
+
+      - name: Install package
+        run: pacman -U --noconfirm ./*.pkg.tar.zst
+
+      - name: Commit and push changes
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+          if git diff --quiet -- PKGBUILD .SRCINFO; then
+            echo "No package update needed."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add PKGBUILD .SRCINFO
+          git commit -m "Update package to $(awk -F= '/^pkgver=/{print $2; exit}' PKGBUILD)"
+
+          git push
+
+      - name: Install AUR SSH Key
+        uses: webfactory/ssh-agent@v0.10.0
+        with:
+          ssh-private-key: ${{ secrets.AUR_SSH_KEY }}
+
+      - name: Add AUR to known_hosts
+        run: |
+          mkdir -p "${HOME}/.ssh"
+          chmod 700 "${HOME}/.ssh"
+          ssh-keyscan -t rsa,ecdsa,ed25519 aur.archlinux.org >> "${HOME}/.ssh/known_hosts"
+          chmod 600 "${HOME}/.ssh/known_hosts"
+          ssh-keygen -F aur.archlinux.org -f "${HOME}/.ssh/known_hosts"
+
+      - name: Publish to AUR
+        env:
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          export GIT_SSH_COMMAND="ssh -o UserKnownHostsFile=${HOME}/.ssh/known_hosts -o StrictHostKeyChecking=yes"
+          ./scripts/publish-aur

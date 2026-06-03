@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+pkgname=$(grep '^pkgname=' PKGBUILD | cut -d= -f2-)
+aur_url="ssh://aur@aur.archlinux.org/${pkgname}.git"
+aur_branch="${AUR_BRANCH:-master}"
+workdir=''
+
+cleanup() {
+  if [[ -n "${workdir}" ]]; then
+    rm -rf "${workdir}"
+  fi
+}
+trap cleanup EXIT
+
+version="$(awk -F= '/^pkgver=/{print $2; exit}' PKGBUILD)"
+commit_name="${GIT_COMMITTER_NAME:-${GIT_AUTHOR_NAME:-$(git config user.name || true)}}"
+commit_email="${GIT_COMMITTER_EMAIL:-${GIT_AUTHOR_EMAIL:-$(git config user.email || true)}}"
+
+if [[ -z "${version}" ]]; then
+  echo "Could not read pkgver from PKGBUILD" >&2
+  exit 1
+fi
+
+if [[ -z "${commit_name}" || -z "${commit_email}" ]]; then
+  echo "Set git user.name/user.email or GIT_COMMITTER_NAME/GIT_COMMITTER_EMAIL before publishing." >&2
+  exit 1
+fi
+
+workdir="$(mktemp -d)"
+git -c init.defaultBranch=${aur_branch} clone "${aur_url}" "${workdir}"
+
+cp PKGBUILD .SRCINFO README.md LICENSE "${workdir}/"
+
+cd "${workdir}"
+git config user.name "${commit_name}"
+git config user.email "${commit_email}"
+
+git add PKGBUILD .SRCINFO README.md LICENSE
+
+if git diff --cached --quiet -- PKGBUILD .SRCINFO README.md LICENSE; then
+  echo "AUR package is already current."
+  exit 0
+fi
+
+if [[ -z "${COMMIT_MSG:-}" ]]; then
+  git commit -m "Update ${pkgname} to ${version}"
+else
+  git commit -m "${COMMIT_MSG}"
+fi
+git push origin "${aur_branch}"
